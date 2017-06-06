@@ -36,7 +36,7 @@ type Exporter struct {
 	sv0Used    prometheus.Gauge
 	sv1Used    prometheus.Gauge
 	edenUsed   prometheus.Gauge
-	fgcTimes   prometheus.Counter
+	fgcTimes   prometheus.Gauge
 	fgcSec     prometheus.Gauge
 }
 
@@ -99,7 +99,7 @@ func NewExporter(jstatPath string, targetPid string) *Exporter {
 			Name:      "edenUsed",
 			Help:      "edenUsed",
 		}),
-		fgcTimes: prometheus.NewCounter(prometheus.CounterOpts{
+		fgcTimes: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "fgcTimes",
 			Help:      "fgcTimes",
