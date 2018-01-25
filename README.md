@@ -11,9 +11,11 @@ go build jstat_exporter.go
 Help on flags of jstat_exporter:
 ```
   -jstat.path string
-    	jstat path (default "/usr/bin/jstat")
-  -target.pid string
-    	target pid (default ":0")
+        jstat path (default "/usr/bin/jstat")
+  -jps.path string
+        jps path (default "/usr/bin/jps")
+  -target string
+        target jps name
   -web.listen-address string
     	Address on which to expose metrics and web interface. (default ":9010")
   -web.telemetry-path string

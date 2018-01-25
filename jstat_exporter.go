@@ -6,7 +6,13 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
+	"bufio"
+
+	"sync"
+
+	"github.com/go-errors/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/log"
 )
@@ -19,12 +25,15 @@ var (
 	listenAddress = flag.String("web.listen-address", ":9010", "Address on which to expose metrics and web interface.")
 	metricsPath   = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
 	jstatPath     = flag.String("jstat.path", "/usr/bin/jstat", "jstat path")
-	targetPid     = flag.String("target.pid", ":0", "target pid")
+	jpsPath       = flag.String("jps.path", "/usr/bin/jps", "jps path")
+	target        = flag.String("target", "", "Target name of jps.")
+	interval      = flag.String("interval", "1000", "Interval of jps.")
 )
 
+var mu = sync.RWMutex{}
+var latestJstat = make(map[string]string)
+
 type Exporter struct {
-	jstatPath  string
-	targetPid  string
 	newMax     prometheus.Gauge
 	newCommit  prometheus.Gauge
 	oldMax     prometheus.Gauge
@@ -40,10 +49,8 @@ type Exporter struct {
 	fgcSec     prometheus.Gauge
 }
 
-func NewExporter(jstatPath string, targetPid string) *Exporter {
+func NewExporter() *Exporter {
 	return &Exporter{
-		jstatPath: jstatPath,
-		targetPid: targetPid,
 		newMax: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "newMax",
@@ -138,143 +145,244 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 }
 
 func (e *Exporter) JstatGccapacity(ch chan<- prometheus.Metric) {
+	mu.RLock()
+	defer mu.RUnlock()
 
-	out, err := exec.Command(e.jstatPath, "-gccapacity", e.targetPid).Output()
-	if err != nil {
-		log.Fatal(err)
-	}
+	line, ok := latestJstat["-gccapacity"]
 
-	for i, line := range strings.Split(string(out), "\n") {
-		if i == 1 {
-			parts := strings.Fields(line)
-			newMax, err := strconv.ParseFloat(parts[1], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.newMax.Set(newMax)
-			e.newMax.Collect(ch)
-			newCommit, err := strconv.ParseFloat(parts[2], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.newCommit.Set(newCommit)
-			e.newCommit.Collect(ch)
-			oldMax, err := strconv.ParseFloat(parts[7], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.oldMax.Set(oldMax)
-			e.oldMax.Collect(ch)
-			oldCommit, err := strconv.ParseFloat(parts[8], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.oldCommit.Set(oldCommit)
-			e.oldCommit.Collect(ch)
-			metaMax, err := strconv.ParseFloat(parts[11], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.metaMax.Set(metaMax)
-			e.metaMax.Collect(ch)
-			metaCommit, err := strconv.ParseFloat(parts[12], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.metaCommit.Set(metaCommit)
-			e.metaCommit.Collect(ch)
+	if ok && line != "" {
+		parts := strings.Fields(line)
+		newMax, err := strconv.ParseFloat(parts[1], 64)
+		if err != nil {
+			log.Fatal(err)
 		}
+		e.newMax.Set(newMax)
+		e.newMax.Collect(ch)
+		newCommit, err := strconv.ParseFloat(parts[2], 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		e.newCommit.Set(newCommit)
+		e.newCommit.Collect(ch)
+		oldMax, err := strconv.ParseFloat(parts[7], 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		e.oldMax.Set(oldMax)
+		e.oldMax.Collect(ch)
+		oldCommit, err := strconv.ParseFloat(parts[8], 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		e.oldCommit.Set(oldCommit)
+		e.oldCommit.Collect(ch)
+		metaMax, err := strconv.ParseFloat(parts[11], 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		e.metaMax.Set(metaMax)
+		e.metaMax.Collect(ch)
+		metaCommit, err := strconv.ParseFloat(parts[12], 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		e.metaCommit.Set(metaCommit)
+		e.metaCommit.Collect(ch)
 	}
 }
 
 func (e *Exporter) JstatGcold(ch chan<- prometheus.Metric) {
+	mu.RLock()
+	defer mu.RUnlock()
 
-	out, err := exec.Command(e.jstatPath, "-gcold", e.targetPid).Output()
-	if err != nil {
-		log.Fatal(err)
-	}
+	line, ok := latestJstat["-gcold"]
 
-	for i, line := range strings.Split(string(out), "\n") {
-		if i == 1 {
-			parts := strings.Fields(line)
-			metaUsed, err := strconv.ParseFloat(parts[1], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.metaUsed.Set(metaUsed) // MU: Metaspace utilization (kB).
-			e.metaUsed.Collect(ch)
-			oldUsed, err := strconv.ParseFloat(parts[5], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.oldUsed.Set(oldUsed) // OU: Old space utilization (kB).
-			e.oldUsed.Collect(ch)
+	if ok && line != "" {
+		parts := strings.Fields(line)
+		metaUsed, err := strconv.ParseFloat(parts[1], 64)
+		if err != nil {
+			log.Fatal(err)
 		}
+		e.metaUsed.Set(metaUsed) // MU: Metaspace utilization (kB).
+		e.metaUsed.Collect(ch)
+		oldUsed, err := strconv.ParseFloat(parts[5], 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		e.oldUsed.Set(oldUsed) // OU: Old space utilization (kB).
+		e.oldUsed.Collect(ch)
 	}
 }
 
 func (e *Exporter) JstatGcnew(ch chan<- prometheus.Metric) {
+	mu.RLock()
+	defer mu.RUnlock()
 
-	out, err := exec.Command(e.jstatPath, "-gcnew", e.targetPid).Output()
-	if err != nil {
-		log.Fatal(err)
-	}
+	line, ok := latestJstat["-gcnew"]
 
-	for i, line := range strings.Split(string(out), "\n") {
-		if i == 1 {
-			parts := strings.Fields(line)
-			sv0Used, err := strconv.ParseFloat(parts[2], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.sv0Used.Set(sv0Used)
-			e.sv0Used.Collect(ch)
-			sv1Used, err := strconv.ParseFloat(parts[3], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.sv1Used.Set(sv1Used)
-			e.sv1Used.Collect(ch)
-			edenUsed, err := strconv.ParseFloat(parts[8], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.edenUsed.Set(edenUsed)
-			e.edenUsed.Collect(ch)
+	if ok && line != "" {
+		parts := strings.Fields(line)
+		sv0Used, err := strconv.ParseFloat(parts[2], 64)
+		if err != nil {
+			log.Fatal(err)
 		}
+		e.sv0Used.Set(sv0Used)
+		e.sv0Used.Collect(ch)
+		sv1Used, err := strconv.ParseFloat(parts[3], 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		e.sv1Used.Set(sv1Used)
+		e.sv1Used.Collect(ch)
+		edenUsed, err := strconv.ParseFloat(parts[8], 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		e.edenUsed.Set(edenUsed)
+		e.edenUsed.Collect(ch)
 	}
 }
 
 func (e *Exporter) JstatGc(ch chan<- prometheus.Metric) {
+	mu.RLock()
+	defer mu.RUnlock()
 
-	out, err := exec.Command(e.jstatPath, "-gc", e.targetPid).Output()
-	if err != nil {
-		log.Fatal(err)
+	line, ok := latestJstat["-gc"]
+
+	if ok && line != "" {
+		parts := strings.Fields(line)
+		fgcTimes, err := strconv.ParseFloat(parts[14], 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		e.fgcTimes.Set(fgcTimes)
+		e.fgcTimes.Collect(ch)
+		fgcSec, err := strconv.ParseFloat(parts[15], 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		e.fgcSec.Set(fgcSec)
+		e.fgcSec.Collect(ch)
 	}
+}
 
-	for i, line := range strings.Split(string(out), "\n") {
-		if i == 1 {
-			parts := strings.Fields(line)
-			fgcTimes, err := strconv.ParseFloat(parts[14], 64)
-			if err != nil {
-				log.Fatal(err)
+func RunJstatGccapacity(jstatPath, target, interval string) {
+	runCommand(jstatPath, "-gccapacity", target, interval)
+}
+
+func RunJstatGcold(jstatPath, target, interval string) {
+	runCommand(jstatPath, "-gcold", target, interval)
+}
+
+func RunJstatGcnew(jstatPath, target, interval string) {
+	runCommand(jstatPath, "-gcnew", target, interval)
+}
+
+func RunJstatGc(jstatPath, target, interval string) {
+	runCommand(jstatPath, "-gc", target, interval)
+}
+
+func runCommand(jstatPath, command, target, interval string) {
+
+	for {
+		pid, err := Jps(target)
+		if err != nil {
+			time.Sleep(60 * time.Second)
+			continue
+		}
+
+		cmd := exec.Command(jstatPath, command, pid, interval)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			log.Error(err)
+			continue
+		}
+
+		cmd.Start()
+
+		scanner := bufio.NewScanner(stdout)
+
+		first := true
+		for scanner.Scan() {
+			line := scanner.Text()
+			if first {
+				first = false
+				continue
 			}
-			e.fgcTimes.Set(fgcTimes)
-			e.fgcTimes.Collect(ch)
-			fgcSec, err := strconv.ParseFloat(parts[15], 64)
-			if err != nil {
-				log.Fatal(err)
-			}
-			e.fgcSec.Set(fgcSec)
-			e.fgcSec.Collect(ch)
+			// log.Println("put... ")
+			mu.Lock()
+			latestJstat[command] = line
+			mu.Unlock()
+		}
+
+		killProcess(cmd)
+
+		// end jstat
+		log.Printf("Finished jstat... restart")
+	}
+}
+
+func killProcess(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		err := cmd.Process.Kill()
+		if err != nil {
+			log.Error("Error killing jstat process: %v", err)
 		}
 	}
+}
+
+func Jps(name string) (string, error) {
+	cmd := exec.Command(*jpsPath)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Error("Error get stdout pipe: %v", err)
+		return "", err
+	}
+
+	cmd.Start()
+
+	scanner := bufio.NewScanner(stdout)
+	pid := ""
+	for scanner.Scan() {
+		line := scanner.Text()
+		items := strings.Split(line, " ")
+
+		if len(items) == 2 {
+			if items[1] == "Jps" || items[1] == "Jstat" {
+				continue
+			}
+
+			if name != "" {
+				if items[1] == name {
+					pid = items[0]
+					break
+				}
+			} else {
+				pid = items[0]
+				break
+			}
+		}
+	}
+	cmd.Wait()
+
+	if len(pid) == 0 {
+		log.Error("No target process: %v", name)
+		return "", errors.New("No target process: " + name)
+	}
+
+	return pid, nil
 }
 
 func main() {
 	flag.Parse()
 
-	exporter := NewExporter(*jstatPath, *targetPid)
+	go RunJstatGc(*jstatPath, *target, *interval)
+	go RunJstatGcnew(*jstatPath, *target, *interval)
+	go RunJstatGcold(*jstatPath, *target, *interval)
+	go RunJstatGccapacity(*jstatPath, *target, *interval)
+
+	exporter := NewExporter()
 	prometheus.MustRegister(exporter)
 
 	log.Printf("Starting Server: %s", *listenAddress)
